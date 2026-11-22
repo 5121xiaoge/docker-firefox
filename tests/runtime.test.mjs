@@ -308,6 +308,36 @@ test("healthcheck rejects missing or malformed initialized displays", () => {
 });
 
 const workflow = readFileSync(path.join(root, ".github/workflows/build-image.yml"), "utf8");
+const httpCheckBlock = ("          HTTP_RESULT=" + workflow.split("          HTTP_RESULT=")[1]
+    .split('          if curl --silent --insecure --location')[0])
+    .split("\n").map(line => line.slice(10)).join("\n");
+
+function checkHTTP(response) {
+    return spawnSync(bash, ["-s"], {
+        input: 'curl() { printf "%s" "$TEST_HTTP_RESULT"; }\nADDRESS=127.0.0.1:5800\n' + httpCheckBlock,
+        encoding: "utf8",
+        env: { ...baseEnvironment, TEST_HTTP_RESULT: response },
+        timeout: 10000,
+    });
+}
+
+test("secure web checks accept HTTPS redirects and rejected plaintext connections", () => {
+    for (const response of ["000 ", "400 ", "403 ", "301 https://127.0.0.1:5800/",
+        "302 https://127.0.0.1:5800/", "307 https://127.0.0.1:5800/", "308 https://127.0.0.1:5800/"]) {
+        const result = checkHTTP(response);
+        assert.equal(result.status, 0, `${response}: ${result.stderr}`);
+    }
+});
+
+test("secure web checks reject plaintext content and non-HTTPS redirects", () => {
+    for (const response of ["200 ", "204 ", "302 http://127.0.0.1:5800/", "302 /login",
+        "301 ", "500 ", ""]) {
+        const result = checkHTTP(response);
+        assert.notEqual(result.status, 0, response);
+        assert.match(result.stdout, /::error::Plain HTTP/);
+    }
+});
+
 const prepareBlock = workflow.split("      - name: Prepare image tags\n")[1]
     .split("      - name: Set up QEMU\n")[0]
     .split("        run: |\n")[1]
