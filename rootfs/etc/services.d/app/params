@@ -1,0 +1,47 @@
+#!/bin/sh
+
+set -e # Exit immediately if a command exits with a non-zero status.
+set -u # Treat unset variables as an error.
+
+# Set location of profile.
+echo "--profile"
+echo "/config/profile"
+
+# Make sure we don't get ask to be the default browser.
+echo "--setDefaultBrowser"
+
+# Check if kiosk mode is enabled.
+if is-bool-val-true "${FF_KIOSK:-0}"; then
+    echo "--kiosk"
+fi
+
+# Custom arguments.
+if [ -n "${FF_CUSTOM_ARGS:-}" ]; then
+    awk -f /usr/share/firefox-tools/parse-args.awk
+fi
+
+# URL to open.
+# NOTE: This should be the last argument.
+if [ -n "${FF_OPEN_URL:-}" ]; then
+    awk '
+        BEGIN {
+            urls = ENVIRON["FF_OPEN_URL"]
+            if (urls ~ /[\r\n]/) {
+                print "ERROR: FF_OPEN_URL must not contain line breaks." > "/dev/stderr"
+                exit 1
+            }
+            count = split(urls, items, "|")
+            for (i = 1; i <= count; i++) {
+                if (items[i] ~ /^-/) {
+                    print "ERROR: FF_OPEN_URL must contain URLs, not options." > "/dev/stderr"
+                    exit 1
+                }
+            }
+            for (i = 1; i <= count; i++) {
+                if (items[i] != "") print items[i]
+            }
+        }
+    '
+fi
+
+# vim:ft=sh:ts=4:sw=4:et:sts=4

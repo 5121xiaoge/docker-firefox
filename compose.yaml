@@ -1,0 +1,113 @@
+services:
+  firefox:
+    image: ${FIREFOX_IMAGE:-firefox-hanging:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.hanging
+      args:
+        FIREFOX_BASE_IMAGE: ${FIREFOX_BASE_IMAGE:-jlesage/firefox:v26.09.1@sha256:302aa068dcfa46a2d248771c998f67377383554df8940252caef42b99c13eb65}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      autoheal: "true"
+    stop_grace_period: 30s
+    shm_size: ${FIREFOX_SHM_SIZE:-512m}
+    mem_limit: ${FIREFOX_MEM_LIMIT:-2g}
+    cpus: 1.5
+    pids_limit: 512
+    ports:
+      - "${FIREFOX_BIND_IP:-127.0.0.1}:${FIREFOX_PORT:-5800}:5800"
+    volumes:
+      - firefox_config:/config:rw
+    environment:
+      USER_ID: ${USER_ID:-1000}
+      GROUP_ID: ${GROUP_ID:-1000}
+      TZ: ${TZ:-Asia/Shanghai}
+      KEEP_APP_RUNNING: "1"
+      DISPLAY_WIDTH: ${DISPLAY_WIDTH:-1280}
+      DISPLAY_HEIGHT: ${DISPLAY_HEIGHT:-720}
+      FF_OPEN_URL: ${FF_OPEN_URL:-}
+      FF_KIOSK: ${FF_KIOSK:-0}
+      FF_CUSTOM_ARGS: ${FF_CUSTOM_ARGS:-}
+      WEB_AUDIO: "0"
+      WEB_FILE_MANAGER: "0"
+      WEB_TERMINAL: "0"
+      WEB_NOTIFICATION: "0"
+      VNC_LISTENING_PORT: "-1"
+      # Firefox tuning: fewer content processes, unload tabs under memory
+      # pressure, save the session less often, no telemetry.
+      FF_PREF_PROC: "dom.ipc.processCount=4"
+      FF_PREF_UNLOAD: "browser.tabs.unloadOnLowMemory=true"
+      FF_PREF_SESSION: "browser.sessionstore.interval=60000"
+      FF_PREF_TELEMETRY: "toolkit.telemetry.enabled=false"
+      FF_PREF_HEALTH: "datareporting.healthreport.uploadEnabled=false"
+      FF_PREF_STUDIES: "app.shield.optoutstudies.enabled=false"
+      SECURE_CONNECTION: ${SECURE_CONNECTION:-0}
+      WEB_AUTHENTICATION: ${WEB_AUTHENTICATION:-0}
+      WEB_AUTHENTICATION_USERNAME: ${WEB_AUTHENTICATION_USERNAME:-}
+      WEB_AUTHENTICATION_PASSWORD: ${WEB_AUTHENTICATION_PASSWORD:-}
+    healthcheck:
+      test: ["CMD", "/usr/share/firefox-tools/healthcheck.sh"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+
+  # Restarts containers labelled autoheal=true when they become unhealthy.
+  # Note: needs the Docker socket, which grants control over Docker.
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "30"
+      AUTOHEAL_START_PERIOD: "120"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+
+  # Daily backup of the Firefox profile volume to ./backup (keeps 7, one per weekday).
+  backup:
+    image: alpine:3.24
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    mem_limit: 128m
+    volumes:
+      - firefox_config:/data:ro
+      - ./backup:/backup
+    command:
+      - sh
+      - -c
+      - |
+        while :; do
+          N="$$(date +%u)"
+          if tar czf /backup/.tmp.tgz -C /data . 2>/dev/null || [ $$? -eq 1 ]; then
+            mv -f /backup/.tmp.tgz "/backup/firefox_config_$$N.tgz"
+          fi
+          sleep 86400
+        done
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+volumes:
+  firefox_config:
