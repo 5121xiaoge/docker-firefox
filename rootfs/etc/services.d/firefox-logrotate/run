@@ -1,7 +1,0 @@
-#!/bin/sh
-
-set -eu
-
-exec /opt/base/sbin/logrotate \
-    --state /config/log/firefox/logrotate.status \
-    /etc/firefox/logrotate.conf
