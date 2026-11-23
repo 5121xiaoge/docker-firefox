@@ -1,0 +1,121 @@
+# 部署已发布的 GHCR 镜像（不在服务器上构建）。install.sh 内嵌的 services 段与本文件逐字一致，
+# 由 tests/deploy.test.mjs 校验；修改时两处一起改。
+#
+# 首次启动后创建网页登录用户（bcrypt 哈希保存在数据卷，不写入环境变量）：
+#   docker compose exec firefox webauth-user add <用户名>
+# 默认只监听 127.0.0.1，经 SSH 隧道访问：ssh -L 5800:127.0.0.1:5800 <用户>@<服务器>
+# 手机等设备直接访问：同目录 .env 写 FIREFOX_BIND_IP=0.0.0.0（保持 HTTPS 和网页登录开启）。
+# 更新镜像：docker compose pull && docker compose up -d
+services:
+  firefox:
+    # 建议固定为 CI 发布的 :sha-<提交> 标签或 @sha256 digest。
+    image: ${FIREFOX_IMAGE:-ghcr.io/5121xiaoge/docker-firefox:latest}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      autoheal: "true"
+    stop_grace_period: 30s
+    shm_size: ${FIREFOX_SHM_SIZE:-512m}
+    mem_limit: ${FIREFOX_MEM_LIMIT:-2g}
+    cpus: 1.5
+    pids_limit: 512
+    ports:
+      - "${FIREFOX_BIND_IP:-127.0.0.1}:${FIREFOX_PORT:-5800}:5800"
+    volumes:
+      - firefox_config:/config
+    environment:
+      USER_ID: ${USER_ID:-1000}
+      GROUP_ID: ${GROUP_ID:-1000}
+      TZ: ${TZ:-Asia/Shanghai}
+      KEEP_APP_RUNNING: "1"
+      SERVICES_GRACETIME: "25000"
+      DISPLAY_WIDTH: ${DISPLAY_WIDTH:-1280}
+      DISPLAY_HEIGHT: ${DISPLAY_HEIGHT:-720}
+      FF_OPEN_URL: ${FF_OPEN_URL:-}
+      SECURE_CONNECTION: ${SECURE_CONNECTION:-1}
+      WEB_AUTHENTICATION: ${WEB_AUTHENTICATION:-1}
+      WEB_AUDIO: "0"
+      WEB_FILE_MANAGER: "0"
+      WEB_TERMINAL: "0"
+      WEB_NOTIFICATION: "0"
+      VNC_LISTENING_PORT: "-1"
+      FF_PREF_PROC: "dom.ipc.processCount=4"
+      FF_PREF_UNLOAD: "browser.tabs.unloadOnLowMemory=true"
+      FF_PREF_SESSION: "browser.sessionstore.interval=60000"
+      FF_PREF_TELEMETRY: "toolkit.telemetry.enabled=false"
+      FF_PREF_HEALTH: "datareporting.healthreport.uploadEnabled=false"
+      FF_PREF_STUDIES: "app.shield.optoutstudies.enabled=false"
+    healthcheck:
+      test: ["CMD", "/usr/share/firefox-tools/healthcheck.sh"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+
+  # Restarts containers labelled autoheal=true when they become unhealthy.
+  # Note: needs the Docker socket, which grants control over Docker.
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "30"
+      AUTOHEAL_START_PERIOD: "120"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 64m
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+
+  # Daily live backup of the Firefox profile volume to ./backup (keeps 7, one
+  # per weekday).  A failed run never replaces the previous archive.
+  backup:
+    image: alpine:3.24
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    mem_limit: 128m
+    volumes:
+      - firefox_config:/data:ro
+      - ./backup:/backup
+    command:
+      - sh
+      - -c
+      - |
+        umask 077
+        chmod 700 /backup
+        while :; do
+          N="$$(date +%u)"
+          for TRY in 1 2 3; do
+            if tar czf /backup/.tmp.tgz -C /data --exclude=profile/cache2 --exclude=profile/startupCache --exclude=xdg/cache .; then
+              mv -f /backup/.tmp.tgz "/backup/firefox_config_$$N.tgz"
+              break
+            fi
+            rm -f /backup/.tmp.tgz
+            echo "backup attempt $$TRY failed" >&2
+            sleep 300
+          done
+          sleep 86400
+        done
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "1"
+
+volumes:
+  firefox_config:

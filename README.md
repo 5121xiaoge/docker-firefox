@@ -3,7 +3,7 @@
 [![Docker Image Size](https://img.shields.io/docker/image-size/jlesage/firefox/latest?logo=docker&style=for-the-badge)](https://hub.docker.com/r/jlesage/firefox/tags)
 [![Docker Pulls](https://img.shields.io/docker/pulls/jlesage/firefox?label=Pulls&logo=docker&style=for-the-badge)](https://hub.docker.com/r/jlesage/firefox)
 [![Docker Stars](https://img.shields.io/docker/stars/jlesage/firefox?label=Stars&logo=docker&style=for-the-badge)](https://hub.docker.com/r/jlesage/firefox)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/jlesage/docker-firefox/build-image.yml?logo=github&branch=master&style=for-the-badge)](https://github.com/jlesage/docker-firefox/actions/workflows/build-image.yml)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/5121xiaoge/docker-firefox/build-image.yml?logo=github&branch=master&style=for-the-badge)](https://github.com/5121xiaoge/docker-firefox/actions/workflows/build-image.yml)
 [![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg?style=for-the-badge)](https://paypal.me/JocelynLeSage)
 
 This project provides a lightweight and secure Docker container for
@@ -40,7 +40,7 @@ Foundation and its subsidiary, Mozilla Corporation.
       * [Ports](#ports)
       * [Changing Parameters of a Running Container](#changing-parameters-of-a-running-container)
       * [Docker Compose File](#docker-compose-file)
-   * [Persistent Web Pages](#persistent-web-pages)
+   * [Fork Notes](#fork-notes)
    * [Docker Image Versioning and Tags](#docker-image-versioning-and-tags)
    * [Docker Image Update](#docker-image-update)
       * [Synology](#synology)
@@ -262,16 +262,23 @@ services:
       - "/docker/appdata/firefox:/config:rw"
 ```
 
-## Persistent Web Pages
+## Fork Notes
 
-本分支的 `Dockerfile.hanging` 基于固定的官方镜像 `jlesage/firefox:v26.09.1`
-及其 Docker Hub manifest SHA256，叠加启动脚本及网页触摸、鼠标修复，不重新编译 Firefox、
-NSPR 和 GUI。原始 `Dockerfile` 保留为完整源码构建入口。
+以下是本分支（长期保持网页运行）相对上游的说明，其余章节沿用上游文档。
+
+### 镜像
+
+`Dockerfile.hanging` 的 `FROM` 行直接固定官方镜像 `jlesage/firefox:v26.11.1`
+（Firefox 160）及其 manifest SHA256，这是基础镜像版本的唯一出处；Dependabot
+每周按这一行提出新版本。在其上叠加启动脚本及网页触摸、鼠标修复，不重新编译
+Firefox、NSPR 和 GUI。原始 `Dockerfile` 保留为完整源码构建入口。
 
 网页客户端支持双指缩放整个桌面，放大后可双指平移；侧栏提供放大、缩小和
 适配桌面按钮。触摸取消或切到后台时会释放鼠标按键并重置手势，避免残留拖动。
-这些修改在镜像构建时从 `rootfs/opt/noVNC/app/` 注入，两个 Dockerfile 均会检查
-网页入口是否成功应用修复；不是部署后手动修改容器。
+缩放时只临时切到 Local Scaling，Scaling Mode 下拉框仍可随时切回。
+这些修改在镜像构建时从 `rootfs/opt/noVNC/app/` 注入：构建会检查所依赖的 noVNC
+内部接口是否仍存在，缺少任一项即构建失败；扩展模块在页面中动态加载，即使
+加载失败也不影响原有客户端。
 
 本地构建和启动：
 
@@ -283,19 +290,56 @@ docker compose up -d --build
 `FF_OPEN_URL` 用 `|` 分隔多个网页。`/config` 使用命名卷，保存浏览器配置、
 登录状态及扩展。不要用 `docker compose down --volumes`，除非确实要删除这些数据。
 
+> 手机或其他设备直接访问时，在 `.env` 中设置 `FIREFOX_BIND_IP=0.0.0.0`
+> （或指定网卡地址），并保持 `SECURE_CONNECTION=1`、`WEB_AUTHENTICATION=1`
+> 且已添加登录用户。旧版部署命令是 `5800:5800` 对外开放，按新版升级后若不设置，
+> 外部设备将无法连接。
+
+### 部署到服务器
+
+服务器上不构建镜像，直接使用 CI 发布的 GHCR 镜像，有两种方式：
+
+  - `compose.ghcr.yaml`：复制到服务器目录并改名为 `compose.yaml`，无需 `.env`
+    即可 `docker compose up -d`；默认开启 HTTPS 和网页登录。
+  - `install.sh`：以 root 执行，写入 `/opt/firefox`（`FIREFOX_DIR` 可改）的
+    `compose.yaml`、`deploy.sh` 和 `.env`，然后自动部署。缺少 Docker 时会先询问
+    再安装；`FIREFOX_INSTALL_ONLY=1` 只写文件。重复执行会保留 `.env`，
+    被手工改过的文件先改名为 `.bak` 再更新。
+
+`deploy.sh` 先拉取镜像，再停止所有使用该数据卷的容器（其他项目的旧容器只停止
+不删除），离线备份数据卷到 `backup/firefox_config_deploy_*.tgz`（保留最近 5 份），
+然后启动并等待健康检查。备份失败时恢复旧容器、不部署新版本。首次部署且还没有
+网页用户时，会交互式调用 `webauth-user add` 设置密码。
+
+网页登录密码以 bcrypt 哈希保存在数据卷的 `/config/webauth-htpasswd`，不写入
+`.env`、Compose 或环境变量：
+
+```shell
+docker compose exec firefox webauth-user add <用户名>
+docker compose exec firefox webauth-user update <用户名>
+```
+
+> 用 v1.1 `install.sh` 部署过的服务器：当时写入 `.env` 的密码是随源码公开的固定
+> 字符串，而不是输入的密码，请尽快处理。再次运行 `deploy.sh` 会要求重设该用户的密码；
+> 没有终端或重设失败时直接删除该用户（之后用 `add` 重新创建），并从 `.env` 删除
+> 这两行旧配置。也可以立即手动执行上面的 `update` 命令。
+
 ### GitHub 构建
 
-推送到仓库默认分支后，Actions 会先运行启动脚本和网页输入测试、校验 Compose，再执行
-amd64 容器启动检查。全部通过后，发布四种架构的
+推送到仓库默认分支后，Actions 会先运行启动、部署脚本和网页输入测试、校验两个
+Compose 文件，再执行 amd64 容器启动、HTTPS 和网页登录检查。全部通过后，发布四种架构的
 `ghcr.io/<仓库所有者>/<仓库名>:latest` 和 `:sha-<提交前12位>`。
 推送 `v*` 标签会发布去掉开头 `v` 的版本标签，不覆盖 `latest`；
-普通分支和 PR 只验证、构建，不发布。
+PR 只验证、构建，不发布；其他分支的推送不单独触发，以免与 PR 重复构建。
+其余三种架构只构建、不运行检查。
 
 使用仓库自动提供的 `GITHUB_TOKEN`，不需要原作者的 Docker Hub 或 Pushover
 密钥。组织策略可能限制包写入；首次发布后，按需求设置 GHCR 包的访问权限。
 私有包需要部署端具备拉取权限，不要把凭据写入 Compose、仓库或启动参数。
 
-部署已经发布的镜像时，将 `.env` 中的 `FIREFOX_IMAGE` 设置为对应 GHCR 镜像：
+用本地 `compose.yaml` 部署已经发布的镜像时，将 `.env` 中的 `FIREFOX_IMAGE`
+设置为对应 GHCR 镜像。生产环境建议固定为 `:sha-<提交>` 标签或 `@sha256` digest，
+升级时再改，避免 `latest` 在重启时悄悄换版本：
 
 ```shell
 docker compose pull
@@ -316,25 +360,38 @@ docker compose up -d --no-build
 
 ### 资源与安全
 
-Compose 默认采用 1280×720、1.5 CPU 上限、1 GiB 内存上限和 256 MiB
-共享内存，关闭音频、文件管理器、Web 终端及外部 VNC 端口。内存上限不是
+Compose 默认采用 1280×720、1.5 CPU 上限、2 GiB 内存上限和 512 MiB
+共享内存（`.env` 中的 `FIREFOX_MEM_LIMIT`、`FIREFOX_SHM_SIZE`），关闭音频、
+文件管理器、Web 终端、通知及外部 VNC 端口。内存上限不是
 实际占用承诺；共享内存也计入容器内存，复杂网页、多标签或视频需要调高上限。
-`KEEP_APP_RUNNING=1` 会重启退出的 Firefox；健康检查只检测可见窗口，
-Docker 不会仅因为 `unhealthy` 状态自动重启容器。
+`KEEP_APP_RUNNING=1` 会重启退出的 Firefox。Docker 本身不会因为 `unhealthy`
+自动重启容器，因此 Compose 附带 `autoheal` 服务，重启带 `autoheal=true` 标签且
+变为 `unhealthy` 的容器；它需要挂载 Docker socket，等同于拥有 Docker 的控制权。
+健康检查只检测 Firefox 窗口是否存在，页面卡死但窗口仍在时检测不到。
+停止容器时留给 Firefox 25 秒保存会话（`SERVICES_GRACETIME`），小于 30 秒的
+`stop_grace_period`。
+
+`backup` 服务每天把数据卷打包到 `./backup/firefox_config_<星期>.tgz`，保留 7 份，
+排除缓存目录；打包失败会重试，不会覆盖上一份。它在 Firefox 运行时打包，
+正在写入的 SQLite 数据库（Cookie、历史）不保证是一致快照，恢复时个别文件可能需要
+Firefox 自行修复；`deploy.sh` 在停机状态下生成的 `firefox_config_deploy_*.tgz`
+更可靠，重要变更前可以先运行一次。备份含 Cookie 和已保存的登录信息，
+目录权限为 700，不要提交到仓库或随意复制。
 
 Firefox 文件日志每 300 秒检查一次，超过 1 MiB 时轮转，保留两份压缩历史；
 Docker 控制台日志另设 10 MiB × 2。检查间隔内文件仍可能超过阈值。
 
 不要直接将未认证的 HTTP 界面暴露到公网。需要开放给手机或外部网络时，
-先在默认的本地访问模式下创建密码哈希：
+先在仍只监听 `127.0.0.1` 时设置 `SECURE_CONNECTION=1`、`WEB_AUTHENTICATION=1`
+并重建容器（密码库只在开启网页登录后创建），再添加用户：
 
 ```shell
 docker compose exec firefox webauth-user add your-user
 ```
 
-工具会交互式询问密码。然后设置 `SECURE_CONNECTION=1`、
-`WEB_AUTHENTICATION=1`，配置可信证书，并将 `FIREFOX_BIND_IP` 调整为所需的
-宿主机地址后重建容器。不要将明文密码配置为环境变量；反向代理需转发 WebSocket。
+工具会交互式询问密码。确认能登录后，配置可信证书，并将 `FIREFOX_BIND_IP`
+调整为所需的宿主机地址后重建容器。不要将明文密码配置为环境变量；
+反向代理需转发 WebSocket。
 本分支未关闭 Firefox 沙箱，也不要求 `privileged` 或 `seccomp=unconfined`。
 
 ## Docker Image Versioning and Tags

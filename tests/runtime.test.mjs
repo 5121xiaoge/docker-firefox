@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { tempDir } from "./temp-dir.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const tempRoot = process.env.FIREFOX_TEST_TMPDIR || path.join(root, "temp", "tests");
-mkdirSync(tempRoot, { recursive: true });
 const tools = path.join(root, "rootfs", "usr", "share", "firefox-tools").replaceAll("\\", "/");
 const shell = process.env.FIREFOX_TEST_SHELL || "/bin/sh";
 const bash = process.env.FIREFOX_TEST_BASH || (process.platform === "win32" ? shell : "/bin/bash");
@@ -49,7 +48,7 @@ function params(environment) {
 }
 
 function fixture(contents = "") {
-    const directory = mkdtempSync(path.join(tempRoot, "prefs-"));
+    const directory = tempDir("prefs-");
     const file = path.join(directory, "prefs.js");
     writeFileSync(file, contents, { mode: 0o600 });
     return { directory, file };
@@ -82,7 +81,7 @@ test("quotes, escaped spaces and concatenated words are parsed literally", () =>
 });
 
 test("custom arguments never execute shell substitutions or redirections", () => {
-    const directory = mkdtempSync(path.join(tempRoot, "args-"));
+    const directory = tempDir("args-");
     const sentinel = path.join(directory, "unexpected").replaceAll("\\", "/");
     const result = params({ FF_CUSTOM_ARGS: `$(touch "${sentinel}") ; echo injected > "${sentinel}"` });
     assert.equal(result.status, 0, result.stderr);

@@ -1,6 +1,8 @@
 .env
 .env.*
 !.env.example
+# Profile backups written by compose (cookies, saved logins).
+/backup/
 /config/
 /temp/
 /work/

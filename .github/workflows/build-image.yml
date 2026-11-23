@@ -1,15 +1,19 @@
 name: Build Firefox image
 
 on:
+  # Branch pushes other than the default branch are covered by pull_request,
+  # so each change is built once.  Keep this in sync with the default branch.
   push:
-    branches: ["**"]
+    branches: ["master"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR runs are cancelled; publishing runs always finish so that
+  # every default-branch commit gets its :sha-<commit> image.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -21,12 +25,16 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
       - name: Test startup scripts
         env:
           FIREFOX_TEST_TMPDIR: ${{ runner.temp }}/firefox-tests
         run: node --test tests/*.test.mjs
       - name: Validate Compose
-        run: docker compose config --quiet
+        # compose.ghcr.yaml needs no .env; the installer copy is checked by tests/deploy.test.mjs.
+        run: docker compose config --quiet && docker compose -f compose.ghcr.yaml config --quiet
 
   build:
     needs: test
@@ -171,6 +179,8 @@ jobs:
             echo "::error::The desktop page was served without authentication."
             exit 1
           fi
+          docker exec firefox-secure webauth-user list | grep -qx ci || {
+            echo "::error::webauth-user does not list the configured user."; exit 1; }
           docker stop --timeout 30 firefox-secure
 
       - name: Clean up smoke-test container

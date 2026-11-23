@@ -1,5 +1,6 @@
-ARG FIREFOX_BASE_IMAGE=jlesage/firefox:v26.09.1@sha256:302aa068dcfa46a2d248771c998f67377383554df8940252caef42b99c13eb65
-FROM ${FIREFOX_BASE_IMAGE}
+# Single source of the pinned base image.  Written inline (not via ARG) so that
+# Dependabot can propose new tags together with their digests.
+FROM jlesage/firefox:v26.11.1@sha256:9b6f819004868a74a14fb1d82f4b2655a316cc99cf58c60bf41cbdb84bf8a08f
 
 # Reuse the pinned upstream browser and GUI without rebuilding their toolchains.
 

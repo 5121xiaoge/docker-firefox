@@ -4,8 +4,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.hanging
-      args:
-        FIREFOX_BASE_IMAGE: ${FIREFOX_BASE_IMAGE:-jlesage/firefox:v26.09.1@sha256:302aa068dcfa46a2d248771c998f67377383554df8940252caef42b99c13eb65}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -25,6 +23,9 @@ services:
       GROUP_ID: ${GROUP_ID:-1000}
       TZ: ${TZ:-Asia/Shanghai}
       KEEP_APP_RUNNING: "1"
+      # Lets the app/kill script wait for Firefox to save its session
+      # (base image default: 5000 ms).  Keep below stop_grace_period.
+      SERVICES_GRACETIME: "25000"
       DISPLAY_WIDTH: ${DISPLAY_WIDTH:-1280}
       DISPLAY_HEIGHT: ${DISPLAY_HEIGHT:-720}
       FF_OPEN_URL: ${FF_OPEN_URL:-}
@@ -45,8 +46,8 @@ services:
       FF_PREF_STUDIES: "app.shield.optoutstudies.enabled=false"
       SECURE_CONNECTION: ${SECURE_CONNECTION:-0}
       WEB_AUTHENTICATION: ${WEB_AUTHENTICATION:-0}
-      WEB_AUTHENTICATION_USERNAME: ${WEB_AUTHENTICATION_USERNAME:-}
-      WEB_AUTHENTICATION_PASSWORD: ${WEB_AUTHENTICATION_PASSWORD:-}
+      # Web users: docker compose exec firefox webauth-user add <user>
+      # (bcrypt hashes in /config/webauth-htpasswd; no plaintext in the environment).
     healthcheck:
       test: ["CMD", "/usr/share/firefox-tools/healthcheck.sh"]
       interval: 30s
@@ -81,7 +82,8 @@ services:
         max-file: "1"
 
 
-  # Daily backup of the Firefox profile volume to ./backup (keeps 7, one per weekday).
+  # Daily live backup of the Firefox profile volume to ./backup (keeps 7, one
+  # per weekday).  A failed run never replaces the previous archive.
   backup:
     image: alpine:3.24
     restart: unless-stopped
@@ -96,11 +98,19 @@ services:
       - sh
       - -c
       - |
+        umask 077
+        chmod 700 /backup
         while :; do
           N="$$(date +%u)"
-          if tar czf /backup/.tmp.tgz -C /data . 2>/dev/null || [ $$? -eq 1 ]; then
-            mv -f /backup/.tmp.tgz "/backup/firefox_config_$$N.tgz"
-          fi
+          for TRY in 1 2 3; do
+            if tar czf /backup/.tmp.tgz -C /data --exclude=profile/cache2 --exclude=profile/startupCache --exclude=xdg/cache .; then
+              mv -f /backup/.tmp.tgz "/backup/firefox_config_$$N.tgz"
+              break
+            fi
+            rm -f /backup/.tmp.tgz
+            echo "backup attempt $$TRY failed" >&2
+            sleep 300
+          done
           sleep 86400
         done
     logging:

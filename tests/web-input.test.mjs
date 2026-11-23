@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { attachDesktopInput } from "../rootfs/opt/noVNC/app/firefox-input.js";
+import { tempDir } from "./temp-dir.mjs";
+import installFirefoxInput, { attachDesktopInput } from "../rootfs/opt/noVNC/app/firefox-input.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -220,6 +221,37 @@ test("disconnect removes handlers, restores upstream scaling and permits a fresh
     assert.notEqual(attachDesktopInput(rfb), input);
 });
 
+test("zooming a remote-resizing session switches to local scaling without locking the setting", () => {
+    const rfb = fixture();
+    rfb.scaleViewport = false;
+    const elements = new Map();
+    globalThis.document.createElement = () => ({});
+    globalThis.document.getElementById = id => {
+        if (!elements.has(id)) {
+            const element = new EventTarget();
+            element.after = section => { elements.set("noVNC_zoom_section", section); };
+            elements.set(id, element);
+        }
+        return elements.get(id);
+    };
+    const calls = [];
+    const UI = {
+        connected: true,
+        rfb: null,
+        connect() { this.rfb = rfb; },
+        forceSetting: (name, value) => calls.push(["force", name, value]),
+        enableSetting: name => calls.push(["enable", name]),
+        applyResizeMode() { calls.push(["apply"]); rfb.scaleViewport = true; },
+        updateViewClip: () => calls.push(["clip"]),
+    };
+    installFirefoxInput(UI);
+    UI.connect();
+    document.getElementById("noVNC_zoom_in").dispatchEvent(new Event("click"));
+    assert.deepEqual(calls, [["force", "resize", "scale"], ["enable", "resize"], ["apply"], ["clip"]]);
+    assert.equal(rfb.scaleViewport, true);
+    rfb.dispatchEvent(new Event("disconnect"));
+});
+
 const tools = path.join(root, "rootfs/usr/share/firefox-tools");
 const bootstrap = `<!DOCTYPE html>
 <head>
@@ -229,18 +261,30 @@ import UI from "./app/ui.js?v=UNIQUE_VERSION";
         UI.start();
 </script>
 </head>
+<li id="noVNC_action_icons_section"></li>
 `;
 
+// Every noVNC internal that install-web-input.sh requires, by file.
+const internals = {
+    "core/rfb.js": ["this._canvas", "this._screen", "this._display", "this._gestures",
+        "this._mouseButtonMask", "this._mousePos", "this._viewportDragging", "_updateScale() {",
+        "_fixScrollbars() {", "_saveExpectedClientSize() {", "_handleMouseButton(x, y, bmask) {"],
+    "core/display.js": ["get scale() {", "set scale(scale) {"],
+    "core/input/gesturehandler.js": ["this._ignored", "this._tracked", "this._state",
+        "attach(target) {", "detach() {"],
+    "app/ui.js": ["forceSetting(name, val) {", "enableSetting(name) {", "applyResizeMode() {",
+        "updateViewClip() {", "connect(event, password) {"],
+};
+
 function webFixture(index = bootstrap) {
-    const temp = process.env.FIREFOX_TEST_TMPDIR || path.join(root, "temp/tests");
-    mkdirSync(temp, { recursive: true });
-    const directory = mkdtempSync(path.join(temp, "web-"));
+    const directory = tempDir("web-");
     mkdirSync(path.join(directory, "app/styles"), { recursive: true });
-    mkdirSync(path.join(directory, "core"), { recursive: true });
+    mkdirSync(path.join(directory, "core/input"), { recursive: true });
     writeFileSync(path.join(directory, "app/firefox-input.js"), "// fixture\n");
     writeFileSync(path.join(directory, "app/styles/firefox-input.css"), "/* fixture */\n");
-    writeFileSync(path.join(directory, "core/rfb.js"), "_updateScale() {}\n");
-    writeFileSync(path.join(directory, "core/display.js"), "get scale() {}\n");
+    for (const [file, lines] of Object.entries(internals)) {
+        writeFileSync(path.join(directory, file), lines.join("\n") + "\n");
+    }
     writeFileSync(path.join(directory, "index.html"), index);
     return directory;
 }
@@ -270,8 +314,30 @@ test("image installation adds the source module before startup and enables viewp
     assert.equal(readFileSync(path.join(directory, "index.html"), "utf8"), index);
 });
 
+test("the extension is imported dynamically so a broken module cannot block noVNC startup", () => {
+    const directory = webFixture();
+    assert.equal(install(directory).status, 0);
+    const index = readFileSync(path.join(directory, "index.html"), "utf8");
+    assert.doesNotMatch(index, /^\s*import installFirefoxInput/m);
+    const tryAt = index.indexOf("try {");
+    assert.ok(tryAt >= 0 && tryAt < index.indexOf("await import(\"./app/firefox-input.js?v=UNIQUE_VERSION\")"));
+    assert.ok(index.indexOf("} catch (error) {") < index.indexOf("UI.start();"));
+});
+
+test("a noVNC build lacking an internal used by the extension is rejected", () => {
+    for (const [file, lines] of Object.entries(internals)) {
+        const directory = webFixture();
+        writeFileSync(path.join(directory, file), lines.slice(1).join("\n") + "\n");
+        const result = install(directory);
+        assert.notEqual(result.status, 0, `${file} without ${lines[0]}`);
+        assert.ok(result.stderr.includes(`${file} lacks '${lines[0]}'`), result.stderr);
+    }
+    const directory = webFixture(bootstrap.replace(' id="noVNC_action_icons_section"', ""));
+    assert.notEqual(install(directory).status, 0);
+});
+
 test("an incompatible upstream bootstrap fails without changing the original HTML", () => {
-    const original = "<head></head>\n";
+    const original = "<head></head>\n<li id=\"noVNC_action_icons_section\"></li>\n";
     const directory = webFixture(original);
     const result = install(directory);
     assert.notEqual(result.status, 0);

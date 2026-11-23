@@ -5,11 +5,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  # Proposes new pinned jlesage/firefox base images (Firefox security updates).
+  # Proposes new jlesage/firefox tag+digest pins for the inline FROM line in
+  # Dockerfile.hanging (Firefox security updates).  Dependabot cannot update
+  # images referenced through ARG or ${VAR} substitutions.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+  # Updates fixed image tags in compose.yaml and compose.ghcr.yaml (autoheal, alpine).
   - package-ecosystem: docker-compose
     directory: /
     schedule:

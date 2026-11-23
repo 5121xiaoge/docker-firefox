@@ -11,8 +11,14 @@
 
 /^[[:space:]]*UI[.]start[(][)];/ {
     start++
-    print "        import installFirefoxInput from \"./app/firefox-input.js?v=UNIQUE_VERSION\";"
-    print "        installFirefoxInput(UI);"
+    # Load the extension dynamically so that a missing or broken module can
+    # never prevent the upstream client from starting.
+    print "        try {"
+    print "            const { default: installFirefoxInput } = await import(\"./app/firefox-input.js?v=UNIQUE_VERSION\");"
+    print "            installFirefoxInput(UI);"
+    print "        } catch (error) {"
+    print "            console.error(\"Firefox input extension disabled:\", error);"
+    print "        }"
 }
 
 { print }

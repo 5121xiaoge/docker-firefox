@@ -205,7 +205,11 @@ export default function installFirefoxInput(UI) {
         const result = originalConnect.apply(this, args);
         if (UI.rfb) {
             controller = attachDesktopInput(UI.rfb, () => {
+                // forceSetting() only updates the in-memory value (not
+                // localStorage) but also disables the control; re-enable it so
+                // the user can switch back to Remote Resizing at any time.
                 UI.forceSetting("resize", "scale");
+                UI.enableSetting("resize");
                 originalApplyResizeMode.call(UI);
                 UI.updateViewClip();
             }, update);
